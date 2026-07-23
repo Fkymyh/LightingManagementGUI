@@ -1,7 +1,11 @@
 import java.awt.BorderLayout;
+import java.awt.Component;
 import java.awt.Dimension;
+import java.awt.GraphicsEnvironment;
 import java.awt.Graphics2D;
 import java.awt.GridLayout;
+import java.awt.Rectangle;
+import java.awt.Window;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.print.Printable;
@@ -12,11 +16,14 @@ import java.io.FileNotFoundException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Scanner;
+import java.util.function.Consumer;
 
 import javax.swing.BorderFactory;
 import javax.swing.DefaultListModel;
+import javax.swing.DefaultListCellRenderer;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
+import javax.swing.JDialog;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JList;
@@ -62,6 +69,7 @@ public class Main {
             CATEGORY_DIMMER,
             CATEGORY_PIN_SPOT,
             CATEGORY_FOG_MACHINE,
+            CATEGORY_HAZE_MACHINE,
             CATEGORY_OTHER
     };
 
@@ -113,6 +121,277 @@ public class Main {
         return true;
     }
 
+    /** 操作結果を消さずにログ欄へ追記し、最新行まで自動スクロールする。 */
+    private static void appendLog(JTextArea area, String message) {
+        if (area.getDocument().getLength() > 0) {
+            area.append("\n");
+        }
+        area.append(message);
+        area.setCaretPosition(area.getDocument().getLength());
+    }
+
+    /** 選択した現場に現在登録されている機材をログ欄へ表示する。 */
+    private static void appendProjectSummary(JTextArea area, Project project) {
+        if (project == null) return;
+
+        StringBuilder summary = new StringBuilder();
+        summary.append("【登録状況】").append(project.getName());
+        if (project.getItems().isEmpty()) {
+            summary.append("：機材未登録");
+        } else {
+            for (RequestItem item : project.getItems()) {
+                summary.append("\n  ")
+                        .append(item.getEquipment().getName())
+                        .append(" × ")
+                        .append(item.getQuantity());
+            }
+        }
+        appendLog(area, summary.toString());
+    }
+
+    /** 選択済みの機材について故障数だけを入力し、在庫を故障在庫へ移す。 */
+    private static boolean registerBrokenEquipment(
+            JFrame owner, JTextArea area, Equipment equipment) {
+        String brokenText = JOptionPane.showInputDialog(
+                owner,
+                equipment.getName() + " の故障数",
+                "故障機材登録",
+                JOptionPane.QUESTION_MESSAGE);
+        Integer brokenCount = parsePositiveInt(owner, brokenText, "故障数");
+        if (brokenCount == null) return false;
+
+        if (brokenCount > equipment.getStock()) {
+            JOptionPane.showMessageDialog(owner, "在庫以上は登録できません");
+            return false;
+        }
+
+        equipment.removeStock(brokenCount);
+        equipment.addBrokenStock(brokenCount);
+        appendLog(area,
+                equipment.getName() + " を "
+                        + brokenCount + "台故障登録しました");
+        return true;
+    }
+
+    /** 在庫と故障数が一目で分かる機材リスト用の表示部品を作る。 */
+    private static DefaultListCellRenderer createEquipmentStatusRenderer() {
+        return new DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(
+                    JList<?> list, Object value, int index,
+                    boolean isSelected, boolean cellHasFocus) {
+                super.getListCellRendererComponent(
+                        list, value, index, isSelected, cellHasFocus);
+                if (value instanceof Equipment equipment) {
+                    setText(equipment.getName()
+                            + "（在庫:" + equipment.getStock()
+                            + " / 故障:" + equipment.getBrokenStock() + "）");
+                }
+                return this;
+            }
+        };
+    }
+
+    /** 最大化操作なしで内容を読みやすい、画面内に収まる大きさへ調整する。 */
+    private static void setComfortablePreviewSize(Window window) {
+        Rectangle screenBounds = GraphicsEnvironment
+                .getLocalGraphicsEnvironment()
+                .getMaximumWindowBounds();
+        int margin = 60;
+        window.setSize(
+                Math.max(900, screenBounds.width - margin),
+                Math.max(650, screenBounds.height - margin));
+    }
+
+    /** 故障中の機材を、現場画面と同じカテゴリ別レイアウトで表示する。 */
+    private static JPanel createBrokenEquipmentCategoryPanel(
+            ArrayList<Equipment> equipments,
+            Consumer<Equipment> doubleClickAction) {
+        JPanel panel = new JPanel(new GridLayout(3, 3, 10, 10));
+
+        for (String category : CATEGORIES) {
+            DefaultListModel<Equipment> model = new DefaultListModel<>();
+            for (Equipment equipment : equipments) {
+                if (equipment.getBrokenStock() > 0
+                        && equipment.getCategory().equals(category)) {
+                    model.addElement(equipment);
+                }
+            }
+
+            JList<Equipment> list = new JList<>(model);
+            list.setCellRenderer(createEquipmentStatusRenderer());
+            if (doubleClickAction != null) {
+                list.setToolTipText("機材をダブルクリックして選択");
+                list.addMouseListener(new MouseAdapter() {
+                    @Override
+                    public void mouseClicked(MouseEvent e) {
+                        if (e.getClickCount() != 2) return;
+                        Equipment selected = list.getSelectedValue();
+                        if (selected != null) {
+                            doubleClickAction.accept(selected);
+                        }
+                    }
+                });
+            }
+
+            JScrollPane pane = new JScrollPane(list);
+            pane.setBorder(BorderFactory.createTitledBorder(category));
+            panel.add(pane);
+        }
+        return panel;
+    }
+
+    /** 故障中の機材だけをカテゴリ別の別ウィンドウで表示する。 */
+    private static void showBrokenEquipmentPreview(
+            JFrame owner, ArrayList<Equipment> equipments) {
+        boolean hasBrokenEquipment =
+                equipments.stream().anyMatch(e -> e.getBrokenStock() > 0);
+        if (!hasBrokenEquipment) {
+            JOptionPane.showMessageDialog(owner, "故障機材はありません");
+            return;
+        }
+
+        JFrame previewFrame = new JFrame("故障機材一覧");
+        setComfortablePreviewSize(previewFrame);
+        previewFrame.add(
+                createBrokenEquipmentCategoryPanel(equipments, null),
+                BorderLayout.CENTER);
+        previewFrame.setLocationRelativeTo(owner);
+        previewFrame.setVisible(true);
+    }
+
+    /** カテゴリ別の故障一覧から、修理する機材をダブルクリックで選択する。 */
+    private static Equipment selectBrokenEquipmentForRepair(
+            JFrame owner, ArrayList<Equipment> equipments) {
+        if (equipments.stream().noneMatch(e -> e.getBrokenStock() > 0)) {
+            JOptionPane.showMessageDialog(owner, "故障機材はありません");
+            return null;
+        }
+
+        Equipment[] selectedEquipment = new Equipment[1];
+        JDialog dialog = new JDialog(owner, "修理完了", true);
+        dialog.setLayout(new BorderLayout());
+        dialog.add(
+                new JLabel("修理する機材をダブルクリックしてください"),
+                BorderLayout.NORTH);
+        dialog.add(
+                createBrokenEquipmentCategoryPanel(equipments, equipment -> {
+                    selectedEquipment[0] = equipment;
+                    dialog.dispose();
+                }),
+                BorderLayout.CENTER);
+        setComfortablePreviewSize(dialog);
+        dialog.setLocationRelativeTo(owner);
+        dialog.setVisible(true);
+        return selectedEquipment[0];
+    }
+
+    /** 全機材のカテゴリ別一覧から、対象機材をダブルクリックで選択する。 */
+    private static Equipment selectEquipmentFromCategories(
+            JFrame owner, ArrayList<Equipment> equipments,
+            String title, String instruction) {
+        Equipment[] selectedEquipment = new Equipment[1];
+        JDialog dialog = new JDialog(owner, title, true);
+        dialog.setLayout(new BorderLayout());
+        dialog.add(new JLabel(instruction), BorderLayout.NORTH);
+
+        JPanel panel = new JPanel(new GridLayout(3, 3, 10, 10));
+        for (String category : CATEGORIES) {
+            DefaultListModel<Equipment> model = new DefaultListModel<>();
+            for (Equipment equipment : equipments) {
+                if (equipment.getCategory().equals(category)) {
+                    model.addElement(equipment);
+                }
+            }
+
+            JList<Equipment> list = new JList<>(model);
+            list.setCellRenderer(createEquipmentStatusRenderer());
+            list.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    if (e.getClickCount() != 2) return;
+                    Equipment selected = list.getSelectedValue();
+                    if (selected != null) {
+                        selectedEquipment[0] = selected;
+                        dialog.dispose();
+                    }
+                }
+            });
+            JScrollPane pane = new JScrollPane(list);
+            pane.setBorder(BorderFactory.createTitledBorder(category));
+            panel.add(pane);
+        }
+
+        dialog.add(panel, BorderLayout.CENTER);
+        setComfortablePreviewSize(dialog);
+        dialog.setLocationRelativeTo(owner);
+        dialog.setVisible(true);
+        return selectedEquipment[0];
+    }
+
+    /** 選択中の現場に登録された機材から、削除対象を選択する。 */
+    private static RequestItem selectProjectItemForDeletion(
+            JFrame owner, Project project) {
+        if (project == null || project.getItems().isEmpty()) {
+            JOptionPane.showMessageDialog(owner, "登録済みの機材はありません");
+            return null;
+        }
+
+        RequestItem[] selectedItem = new RequestItem[1];
+        JDialog dialog = new JDialog(owner, "現場機材削除", true);
+        dialog.setLayout(new BorderLayout());
+        dialog.add(
+                new JLabel(project.getName()
+                        + "：削除する機材をダブルクリックしてください"),
+                BorderLayout.NORTH);
+
+        JPanel panel = new JPanel(new GridLayout(3, 3, 10, 10));
+        for (String category : CATEGORIES) {
+            DefaultListModel<RequestItem> model = new DefaultListModel<>();
+            for (RequestItem item : project.getItems()) {
+                if (item.getEquipment().getCategory().equals(category)) {
+                    model.addElement(item);
+                }
+            }
+
+            JList<RequestItem> list = new JList<>(model);
+            list.setCellRenderer(new DefaultListCellRenderer() {
+                @Override
+                public Component getListCellRendererComponent(
+                        JList<?> source, Object value, int index,
+                        boolean isSelected, boolean cellHasFocus) {
+                    super.getListCellRendererComponent(
+                            source, value, index, isSelected, cellHasFocus);
+                    if (value instanceof RequestItem item) {
+                        setText(item.getEquipment().getName()
+                                + " × " + item.getQuantity() + "台");
+                    }
+                    return this;
+                }
+            });
+            list.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    if (e.getClickCount() != 2) return;
+                    RequestItem selected = list.getSelectedValue();
+                    if (selected != null) {
+                        selectedItem[0] = selected;
+                        dialog.dispose();
+                    }
+                }
+            });
+            JScrollPane pane = new JScrollPane(list);
+            pane.setBorder(BorderFactory.createTitledBorder(category));
+            panel.add(pane);
+        }
+
+        dialog.add(panel, BorderLayout.CENTER);
+        setComfortablePreviewSize(dialog);
+        dialog.setLocationRelativeTo(owner);
+        dialog.setVisible(true);
+        return selectedItem[0];
+    }
+
     /**
      * 入力文字列を正の整数へ変換する。
      * キャンセル、空欄、0以下、整数以外の場合はメッセージを表示してnullを返す。
@@ -152,13 +431,17 @@ public class Main {
 
         for (Equipment equipment : equipments) {
             tableModel.addRow(new Object[]{
-                    equipment.getName(), equipment.getCategory(), equipment.getStock()
+                    equipment.getName(), equipment.getCategory(),
+                    equipment.getStock(), equipment.getBrokenStock()
             });
             listModel.addElement(equipment);
             for (int i = 0; i < CATEGORIES.length; i++) {
                 if (CATEGORIES[i].equals(equipment.getCategory())) {
                     categoryAreas.get(i).append(
-                            equipment.getName() + " : " + equipment.getStock() + "\n");
+                            equipment.getName()
+                                    + "（在庫:" + equipment.getStock()
+                                    + " / 故障:" + equipment.getBrokenStock()
+                                    + "）\n");
                     categoryModels.get(i).addElement(equipment);
                     break;
                 }
@@ -269,7 +552,7 @@ public class Main {
 
         JFrame frame = new JFrame();
         frame.setTitle("照明機材管理システム");
-        frame.setSize(900, 700);
+        setComfortablePreviewSize(frame);
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setLayout(new BorderLayout());
 
@@ -277,15 +560,20 @@ public class Main {
         JPanel projectPanel = new JPanel();
         JPanel dataPanel = new JPanel();
 
-        JTextArea area = new JTextArea(8, 40);
+        JTextArea area = new JTextArea(5, 40);
         area.setEditable(false);
         JScrollPane scroll = new JScrollPane(area);
+        scroll.setBorder(BorderFactory.createTitledBorder("操作ログ・登録状況"));
+
+        projectComboBox.addActionListener(e ->
+                appendProjectSummary(area, (Project) projectComboBox.getSelectedItem()));
 
         // 機材テーブル（今後縮小してもOK）
         String[] equipmentColumns = {
                 "機材名",
                 "カテゴリ",
-                "在庫"
+                "在庫",
+                "故障在庫"
         };
         DefaultTableModel equipmentTableModel = new DefaultTableModel(equipmentColumns, 0);
         JTable equipmentTable = new JTable(equipmentTableModel);
@@ -296,7 +584,8 @@ public class Main {
             equipmentTableModel.addRow(new Object[]{
                     equipment.getName(),
                     equipment.getCategory(),
-                    equipment.getStock()
+                    equipment.getStock(),
+                    equipment.getBrokenStock()
             });
         }
 
@@ -305,12 +594,13 @@ public class Main {
         JButton addButton = new JButton("機材追加");
         JButton searchButton = new JButton("機材検索");
         JButton restockButton = new JButton("在庫補充");
+        JButton projectRestockButton = new JButton("在庫補充");
         JButton categoryButton = new JButton("カテゴリ検索");
         JButton addProjectButton = new JButton("現場追加");
         JButton projectListButton = new JButton("現場一覧");
         JButton registerButton = new JButton("現場へ機材登録");
         JButton detailButton = new JButton("現場詳細");
-        JButton pickingButton = new JButton("ピッキングリスト");
+        JButton pickingButton = new JButton("ピッキングリスト表示");
         JButton deleteItemButton = new JButton("現場機材削除");
         JButton brokenButton = new JButton("故障機材登録");
         JButton brokenListButton = new JButton("故障機材一覧");
@@ -370,7 +660,7 @@ public class Main {
                     refreshEquipmentViews(equipments, equipmentTableModel, equipmentModel,
                             categoryAreas, categoryModels);
 
-                    area.setText(
+                    appendLog(area,
                             selectedProject.getName()
                                     + " に "
                                     + selectedEquipment.getName()
@@ -390,22 +680,55 @@ public class Main {
 
         String[] categories = CATEGORIES;
 
-        JPanel categoryPanel = new JPanel(new GridLayout(2, 4, 10, 10));
+        JPanel categoryPanel = new JPanel(new GridLayout(3, 3, 10, 10));
         for (String category : categories) {
 
             JTextArea categoryArea = new JTextArea();
             categoryArea.setEditable(false);
+            categoryArea.setToolTipText("機材名をダブルクリックすると故障登録できます");
             categoryAreas.add(categoryArea);
 
             for (Equipment equipment : equipments) {
                 if (equipment.getCategory().equals(category)) {
                     categoryArea.append(
                             equipment.getName()
-                                    + " : "
+                                    + "（在庫:"
                                     + equipment.getStock()
-                                    + "\n");
+                                    + " / 故障:"
+                                    + equipment.getBrokenStock()
+                                    + "）\n");
                 }
             }
+
+            categoryArea.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    if (e.getClickCount() != 2) return;
+
+                    int offset = categoryArea.viewToModel2D(e.getPoint());
+                    if (offset < 0) return;
+                    int clickedLine = categoryArea.getDocument()
+                            .getDefaultRootElement().getElementIndex(offset);
+
+                    int categoryLine = 0;
+                    Equipment selectedEquipment = null;
+                    for (Equipment equipment : equipments) {
+                        if (!equipment.getCategory().equals(category)) continue;
+                        if (categoryLine == clickedLine) {
+                            selectedEquipment = equipment;
+                            break;
+                        }
+                        categoryLine++;
+                    }
+                    if (selectedEquipment == null) return;
+
+                    if (registerBrokenEquipment(frame, area, selectedEquipment)) {
+                        refreshEquipmentViews(
+                                equipments, equipmentTableModel, equipmentModel,
+                                categoryAreas, categoryModels);
+                    }
+                }
+            });
 
             JScrollPane pane = new JScrollPane(categoryArea);
             pane.setBorder(BorderFactory.createTitledBorder(category));
@@ -433,29 +756,31 @@ public class Main {
         equipmentPanel.add(equipmentButtonPanel, BorderLayout.SOUTH);
 
         // 現場タブ
-        JPanel projectCreatePanel = new JPanel(new GridLayout(1, 5));
-        projectCreatePanel.add(new JLabel("【現場作成】現場名"));
+        JPanel projectCreatePanel = new JPanel();
+        projectCreatePanel.setBorder(
+                BorderFactory.createTitledBorder("新しい現場を作成"));
+        projectCreatePanel.add(new JLabel("現場名"));
         projectCreatePanel.add(projectNameField);
-        projectCreatePanel.add(new JLabel("【現場作成】日付"));
+        projectCreatePanel.add(new JLabel("日付"));
         projectCreatePanel.add(projectDateField);
         projectCreatePanel.add(addProjectButton);
-        // projectComboBoxは登録フォームだけに配置する。
-        // Swing部品を複数の親へ追加すると、先の親から自動的に外れるためである。
 
         JPanel registerPanel = new JPanel(new BorderLayout());
-        JPanel registerFormPanel = new JPanel(new GridLayout(3, 2));
+        registerPanel.setBorder(BorderFactory.createTitledBorder(
+                "機材登録（機材をダブルクリック）"));
 
-        registerFormPanel.add(new JLabel("現場"));
-        registerFormPanel.add(projectComboBox);
-        registerFormPanel.add(new JLabel("数量"));
-        registerFormPanel.add(registerQuantityField);
+        JPanel projectSelectionPanel = new JPanel();
+        projectSelectionPanel.setBorder(
+                BorderFactory.createTitledBorder("作業する現場"));
+        projectSelectionPanel.add(new JLabel("現場"));
+        projectSelectionPanel.add(projectComboBox);
 
-        registerPanel.setBorder(BorderFactory.createTitledBorder("機材登録"));
-        registerFormPanel.add(new JLabel(""));
-        registerFormPanel.add(registerButton);
+        JPanel projectTopPanel = new JPanel(new GridLayout(1, 2, 10, 0));
+        projectTopPanel.add(projectCreatePanel);
+        projectTopPanel.add(projectSelectionPanel);
 
         // ★ 現場タブ用カテゴリ別パネル
-        JPanel categoryRegisterPanel = new JPanel(new GridLayout(2, 4, 10, 10));
+        JPanel categoryRegisterPanel = new JPanel(new GridLayout(3, 3, 10, 10));
 
         for (String category : CATEGORIES) {
 
@@ -500,7 +825,7 @@ public class Main {
                         refreshEquipmentViews(equipments, equipmentTableModel, equipmentModel,
                                 categoryAreas, categoryModels);
 
-                        area.setText(
+                        appendLog(area,
                                 selectedProject.getName()
                                         + " に "
                                         + selected.getName()
@@ -525,35 +850,61 @@ public class Main {
             categoryRegisterPanel.add(pane);
         }
 
-        // ボタン登録用の機材リストと、ダブルクリック登録用のカテゴリ一覧を併設する。
-        equipmentListScroll.setBorder(BorderFactory.createTitledBorder("登録する機材"));
-        equipmentListScroll.setPreferredSize(new Dimension(220, 300));
-        registerPanel.add(equipmentListScroll, BorderLayout.WEST);
         registerPanel.add(categoryRegisterPanel, BorderLayout.CENTER);
-        registerPanel.add(registerFormPanel, BorderLayout.SOUTH);
 
         JPanel projectActionPanel = new JPanel();
         projectActionPanel.add(projectListButton);
         projectActionPanel.add(detailButton);
         projectActionPanel.add(pickingButton);
         projectActionPanel.add(deleteItemButton);
-        // restockButtonは機材タブにのみ配置する（1つのSwing部品は複数配置できない）。
+        projectActionPanel.add(projectRestockButton);
 
 
         projectPanel.setLayout(new BorderLayout());
-        projectPanel.add(projectCreatePanel, BorderLayout.NORTH);
-        JPanel projectCenterPanel = new JPanel(new BorderLayout());
-        projectCenterPanel.add(registerPanel, BorderLayout.CENTER);
-        projectCenterPanel.add(detailScroll, BorderLayout.SOUTH);
-        projectPanel.add(projectCenterPanel, BorderLayout.CENTER);
+        projectPanel.add(projectTopPanel, BorderLayout.NORTH);
+        projectPanel.add(registerPanel, BorderLayout.CENTER);
         projectPanel.add(projectActionPanel, BorderLayout.SOUTH);
 
-        // データ系
-        dataPanel.add(brokenButton);
-        dataPanel.add(brokenListButton);
-        dataPanel.add(repairButton);
-        dataPanel.add(saveButton);
-        dataPanel.add(loadButton);
+        // データ管理タブでは、機材データを確認しながら各管理操作を行う。
+        JPanel dataButtonPanel = new JPanel();
+        dataButtonPanel.add(brokenButton);
+        dataButtonPanel.add(brokenListButton);
+        dataButtonPanel.add(repairButton);
+        dataButtonPanel.add(saveButton);
+        dataButtonPanel.add(loadButton);
+
+        JPanel dataCategoryPanel = new JPanel(new GridLayout(3, 3, 10, 10));
+        for (int i = 0; i < CATEGORIES.length; i++) {
+            JList<Equipment> dataEquipmentList =
+                    new JList<>(categoryModels.get(i));
+            dataEquipmentList.setCellRenderer(createEquipmentStatusRenderer());
+            dataEquipmentList.setToolTipText(
+                    "機材をダブルクリックすると故障数を入力できます");
+            dataEquipmentList.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    if (e.getClickCount() != 2) return;
+                    Equipment selectedEquipment =
+                            dataEquipmentList.getSelectedValue();
+                    if (selectedEquipment == null) return;
+
+                    if (registerBrokenEquipment(frame, area, selectedEquipment)) {
+                        refreshEquipmentViews(
+                                equipments, equipmentTableModel, equipmentModel,
+                                categoryAreas, categoryModels);
+                    }
+                }
+            });
+
+            JScrollPane dataPane = new JScrollPane(dataEquipmentList);
+            dataPane.setBorder(
+                    BorderFactory.createTitledBorder(CATEGORIES[i]));
+            dataCategoryPanel.add(dataPane);
+        }
+
+        dataPanel.setLayout(new BorderLayout());
+        dataPanel.add(dataButtonPanel, BorderLayout.NORTH);
+        dataPanel.add(dataCategoryPanel, BorderLayout.CENTER);
 
         // タブ
         JTabbedPane tab = new JTabbedPane();
@@ -578,7 +929,7 @@ public class Main {
             if (stock == null) return;
 
             equipments.add(new Equipment(name, category, stock));
-            equipmentTableModel.addRow(new Object[]{name, category, stock});
+            equipmentTableModel.addRow(new Object[]{name, category, stock, 0});
             equipmentModel.addElement(equipments.get(equipments.size() - 1));
             refreshEquipmentViews(equipments, equipmentTableModel, equipmentModel,
                     categoryAreas, categoryModels);
@@ -628,29 +979,35 @@ public class Main {
         });
 
         restockButton.addActionListener(e -> {
-            String name = JOptionPane.showInputDialog("機材名");
-            if (name == null) return;
-            String addText = JOptionPane.showInputDialog("補充数");
+            Equipment target = selectEquipmentFromCategories(
+                    frame,
+                    equipments,
+                    "在庫補充",
+                    "補充する機材をダブルクリックしてください");
+            if (target == null) return;
+
+            String addText = JOptionPane.showInputDialog(
+                    frame,
+                    target.getName() + " の補充数",
+                    "在庫補充",
+                    JOptionPane.QUESTION_MESSAGE);
             Integer addStock = parsePositiveInt(frame, addText, "補充数");
             if (addStock == null) return;
-
-            Equipment target = findEquipmentByName(name, equipments);
-            if (target == null) {
-                area.setText(MSG_NOT_FOUND_EQUIPMENT);
-                return;
-            }
 
             updateEquipmentStock(target, addStock);
             refreshEquipmentViews(equipments, equipmentTableModel, equipmentModel,
                     categoryAreas, categoryModels);
 
-            area.setText(
+            appendLog(area,
                     target.getName()
                             + " の在庫を "
                             + addStock
                             + " 追加しました\n現在庫:"
                             + target.getStock());
         });
+
+        // 現場画面からも機材画面と同じ在庫補充処理を実行する。
+        projectRestockButton.addActionListener(e -> restockButton.doClick());
 
         categoryButton.addActionListener(e -> {
             String category = JOptionPane.showInputDialog("カテゴリ名");
@@ -691,7 +1048,7 @@ public class Main {
             projects.add(project);
             projectComboBox.addItem(project);
 
-            area.setText("現場作成: " + name);
+            appendLog(area, "現場作成: " + name);
 
             projectNameField.setText("");
             projectDateField.setText("");
@@ -729,7 +1086,7 @@ public class Main {
             refreshEquipmentViews(equipments, equipmentTableModel, equipmentModel,
                     categoryAreas, categoryModels);
 
-            area.setText(
+            appendLog(area,
                     selectedProject.name + " に "
                             + selectedEquipment.getName() + " を "
                             + quantity + "台登録しました");
@@ -747,56 +1104,38 @@ public class Main {
             equipmentList.clearSelection();
         });
 
-        pickingButton.addActionListener(e -> {
-            area.setText("");
-            for (Project project : projects) {
-                area.append("現場:" + project.name + "\n");
-
-                if (project.items.size() == 0) {
-                    area.append("機材未登録\n\n");
-                } else {
-                    for (RequestItem item : project.items) {
-                        area.append(
-                                item.equipment.getName()
-                                        + " / "
-                                        + item.quantity
-                                        + "台\n");
-                    }
-                    area.append("\n");
-                }
-            }
-        });
+        // 選択中の現場を、印刷可能なカテゴリ別プレビューで表示する。
+        pickingButton.addActionListener(e -> detailButton.doClick());
 
         deleteItemButton.addActionListener(e -> {
-            String projectName = JOptionPane.showInputDialog("現場名");
-            Project selectedProject = findProjectByName(projectName, projects);
-
+            Project selectedProject =
+                    (Project) projectComboBox.getSelectedItem();
             if (selectedProject == null) {
-                area.setText(MSG_NOT_FOUND_PROJECT);
+                JOptionPane.showMessageDialog(frame, "現場を選択してください");
                 return;
             }
 
-            String equipmentName = JOptionPane.showInputDialog("削除する機材名");
+            RequestItem targetItem =
+                    selectProjectItemForDeletion(frame, selectedProject);
+            if (targetItem == null) return;
 
-            RequestItem targetItem = null;
-            for (RequestItem item : selectedProject.items) {
-                if (item.equipment.getName().equals(equipmentName)) {
-                    targetItem = item;
-                    break;
-                }
-            }
-
-            if (targetItem == null) {
-                area.setText(MSG_NOT_FOUND_EQUIPMENT);
-                return;
-            }
+            int confirmation = JOptionPane.showConfirmDialog(
+                    frame,
+                    targetItem.getEquipment().getName()
+                            + " × " + targetItem.getQuantity()
+                            + "台を現場から削除しますか？",
+                    "現場機材削除",
+                    JOptionPane.YES_NO_OPTION);
+            if (confirmation != JOptionPane.YES_OPTION) return;
 
             targetItem.equipment.addStock(targetItem.quantity);
             selectedProject.items.remove(targetItem);
             refreshEquipmentViews(equipments, equipmentTableModel, equipmentModel,
                     categoryAreas, categoryModels);
 
-            area.setText(targetItem.equipment.getName() + " を削除しました");
+            appendLog(area,
+                    selectedProject.getName() + " から "
+                            + targetItem.equipment.getName() + " を削除しました");
         });
 
         brokenButton.addActionListener(e -> {
@@ -809,63 +1148,31 @@ public class Main {
                 return;
             }
 
-            String brokenText = JOptionPane.showInputDialog("故障数");
-            Integer brokenCount = parsePositiveInt(frame, brokenText, "故障数");
-            if (brokenCount == null) return;
-
-            if (brokenCount > selectedEquipment.getStock()) {
-                area.setText("在庫以上は登録できません");
-                return;
-            }
-
-            selectedEquipment.removeStock(brokenCount);
-            selectedEquipment.addBrokenStock(brokenCount);
-            refreshEquipmentViews(equipments, equipmentTableModel, equipmentModel,
-                    categoryAreas, categoryModels);
-
-            area.setText(
-                    selectedEquipment.getName()
-                            + " を "
-                            + brokenCount
-                            + "台故障登録しました");
-        });
-
-        brokenListButton.addActionListener(e -> {
-            area.setText("");
-            boolean found = false;
-
-            for (Equipment equipment : equipments) {
-                if (equipment.getBrokenStock() > 0) {
-                    area.append(
-                            equipment.getName()
-                                    + " / 故障:"
-                                    + equipment.getBrokenStock()
-                                    + "台\n");
-                    found = true;
-                }
-            }
-
-            if (!found) {
-                area.setText("故障機材はありません");
+            if (registerBrokenEquipment(frame, area, selectedEquipment)) {
+                refreshEquipmentViews(
+                        equipments, equipmentTableModel, equipmentModel,
+                        categoryAreas, categoryModels);
             }
         });
+
+        brokenListButton.addActionListener(e ->
+                showBrokenEquipmentPreview(frame, equipments));
 
         repairButton.addActionListener(e -> {
-            String equipmentName = JOptionPane.showInputDialog("修理した機材名");
-            if (equipmentName == null) return;
-            Equipment selectedEquipment = findEquipmentByName(equipmentName, equipments);
+            Equipment selectedEquipment =
+                    selectBrokenEquipmentForRepair(frame, equipments);
+            if (selectedEquipment == null) return;
 
-            if (selectedEquipment == null) {
-                area.setText(MSG_NOT_FOUND_EQUIPMENT);
-                return;
-            }
-
-            String repairText = JOptionPane.showInputDialog("修理台数");
+            String repairText = JOptionPane.showInputDialog(
+                    frame,
+                    selectedEquipment.getName() + " の修理台数",
+                    "修理完了",
+                    JOptionPane.QUESTION_MESSAGE);
             Integer repairCount = parsePositiveInt(frame, repairText, "修理台数");
             if (repairCount == null) return;
 
             if (repairCount > selectedEquipment.getBrokenStock()) {
-                area.setText("故障数を超えています");
+                JOptionPane.showMessageDialog(frame, "故障数を超えています");
                 return;
             }
 
@@ -874,7 +1181,7 @@ public class Main {
             refreshEquipmentViews(equipments, equipmentTableModel, equipmentModel,
                     categoryAreas, categoryModels);
 
-            area.setText(
+            appendLog(area,
                     selectedEquipment.getName()
                             + " を "
                             + repairCount
@@ -998,7 +1305,7 @@ public class Main {
             }
 
             JFrame previewFrame = new JFrame("現場プレビュー");
-            previewFrame.setSize(700, 500);
+            setComfortablePreviewSize(previewFrame);
             previewFrame.setLayout(new BorderLayout());
 
             JLabel headerLabel = new JLabel(
@@ -1008,7 +1315,7 @@ public class Main {
             previewFrame.add(headerLabel, BorderLayout.NORTH);
 
             JPanel previewPanel =
-                    new JPanel(new GridLayout(2, 4, 10, 10));
+                    new JPanel(new GridLayout(3, 3, 10, 10));
 
             for (String category : CATEGORIES) {
 
@@ -1080,6 +1387,7 @@ public class Main {
         });
 
         frame.setLocationRelativeTo(null);
+        appendProjectSummary(area, (Project) projectComboBox.getSelectedItem());
         frame.setVisible(true);
     }
 }
