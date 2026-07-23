@@ -62,6 +62,36 @@
 
 メイン画面と各プレビュー画面は、ディスプレイの利用可能領域に合わせて、最大化操作をしなくても内容を確認しやすいサイズで開きます。
 
+## 画面構成
+
+```text
+メイン画面
+├ 現場タブ
+│ ├ 新しい現場を作成
+│ ├ 作業する現場を選択
+│ ├ カテゴリ別機材一覧
+│ ├ 現場一覧
+│ ├ 現場詳細
+│ ├ ピッキングリスト表示
+│ ├ 現場機材削除
+│ └ 在庫補充
+├ データ管理タブ
+│ ├ 使用可能在庫・故障在庫
+│ ├ 故障機材登録
+│ ├ 故障機材一覧
+│ ├ 修理完了
+│ ├ 保存
+│ └ 読込
+└ 操作ログ・登録状況
+```
+
+```text
+プレビュー画面
+├ 現場名・日付
+├ 3行×3列のカテゴリ別機材
+└ 印刷
+```
+
 ## 基本操作
 
 ### 1. 現場を作成する
@@ -133,11 +163,13 @@
 
 現状は保存先を選択する機能や自動保存を実装していません。保存・読込の操作性は今後の改善項目です。
 
-## 開発環境
+## 使用技術
 
 - Java 21
 - Java Swing
+- Java AWT
 - Eclipse
+- Git / GitHub
 - 外部ライブラリなし
 
 ## 起動方法
@@ -159,15 +191,34 @@ java -cp bin Main
 
 エントリーポイントは `Main` です。`LightingManagementGUI` は旧画面を起動するクラスであり、現在の管理画面では使用しません。
 
-## クラス構成
+## プロジェクト構成
 
-| クラス | 役割 |
-| --- | --- |
-| `Main` | Swing画面、イベント処理、入力検証、在庫更新、保存・読込、プレビュー、印刷 |
-| `Equipment` | 機材名、カテゴリ、使用可能在庫、故障在庫 |
-| `Project` | 現場名、日付、現場へ登録した機材明細 |
-| `RequestItem` | 現場へ登録した機材と数量 |
-| `LightingManagementGUI` | 初期開発時の旧画面 |
+```text
+LightingManagementGUI
+├ src
+│ ├ Main.java
+│ ├ Equipment.java
+│ ├ Project.java
+│ ├ RequestItem.java
+│ └ LightingManagementGUI.java
+├ bin
+├ equipments.txt
+├ projects.txt
+├ requestItems.txt
+└ README.md
+```
+
+### 主なファイルの役割
+
+- `Main.java`：画面、イベント処理、入力検証、在庫更新、保存・読込、プレビュー、印刷
+- `Equipment.java`：機材名、カテゴリ、使用可能在庫、故障在庫
+- `Project.java`：現場名、日付、現場へ登録した機材明細
+- `RequestItem.java`：現場へ登録した機材と数量
+- `LightingManagementGUI.java`：初期開発時の旧画面
+- `bin`：コンパイル後のclassファイル
+- `equipments.txt`：機材と在庫の保存データ
+- `projects.txt`：現場の保存データ
+- `requestItems.txt`：現場ごとの登録機材の保存データ
 
 データは`ArrayList`とSwingのモデルでメモリ上に保持し、データベースは使用していません。
 
