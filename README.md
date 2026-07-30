@@ -4,6 +4,14 @@
 
 職業訓練で学んだJavaの復習と、前職で経験した照明機材準備の課題を題材に制作しました。
 
+## Windows版をダウンロード
+
+Java実行環境を同梱したWindows版を、GitHub Releasesで公開しています。
+
+**最新版（v1.0.0）：[GitHub Releasesからダウンロード](https://github.com/Fkymyh/LightingManagementGUI/releases/latest)**
+
+利用者側でJavaを別途インストールする必要はありません。ダウンロード後の起動方法と注意事項は、[Windows版の起動方法](#windows版の起動方法)を確認してください。
+
 ## 制作背景
 
 前職では、イベントに必要な照明機材と数量をExcelの一覧表で管理していました。使用しない機材を含む大きな表から必要な情報を探す必要があり、業務に慣れていない時期は、目的の機材を探す作業や準備後の確認に時間がかかっていました。
@@ -151,7 +159,7 @@
 
 「データ管理」タブの「保存」「読込」を使用します。
 
-データは、アプリケーションを起動したカレントディレクトリにある次の3ファイルへ保存されます。
+データは、アプリケーションを起動したフォルダにある次の3ファイルへ保存されます。
 
 | ファイル | 内容 |
 | --- | --- |
@@ -161,18 +169,46 @@
 
 ファイルはカンマ区切りで、見出し行はありません。機材名、カテゴリ名、現場名、日付へカンマを含めることは想定していません。
 
-現状は保存先を選択する機能や自動保存を実装していません。保存・読込の操作性は今後の改善項目です。
+### バックアップ時の注意
+
+3つのTXTファイルは相互に関連しているため、バックアップや別PCへの移行では、必ず3ファイルを同じ時点のセットとしてコピーしてください。
+
+- アプリを終了してからコピーする
+- `equipments.txt`、`projects.txt`、`requestItems.txt`をまとめてバックアップする
+- 復元時も3ファイルを同じフォルダへまとめて戻す
+- EXEだけを別の場所へ移動して使用しない
+
+Windows配布版では、3つのTXTファイルは`LightingManagementGUI.exe`と同じ階層にあります。配布フォルダ全体をバックアップすれば、アプリ本体と保存データをまとめて保管できます。
+
+現状は保存先を選択する機能や自動保存を実装していません。保存形式の改善やデータ移行機能は今後の課題です。
 
 ## 使用技術
 
 - Java 21
 - Java Swing
 - Java AWT
+- `javac`
+- `jar`
+- `jpackage`
 - Eclipse
 - Git / GitHub
+- GitHub Releases
 - 外部ライブラリなし
 
 ## 起動方法
+
+### Windows版の起動方法
+
+1. [GitHub Releasesの最新版](https://github.com/Fkymyh/LightingManagementGUI/releases/latest)からWindows版ZIPをダウンロードします。
+2. ZIPを右クリックし、「すべて展開」で任意の場所へ展開します。
+3. 展開した`LightingManagementGUI`フォルダを開きます。
+4. `LightingManagementGUI.exe`をダブルクリックします。
+
+Java実行環境は`runtime`フォルダへ同梱されているため、Javaの別途インストールは不要です。
+
+`LightingManagementGUI.exe`だけをデスクトップなどへ移動しないでください。`app`、`runtime`、3つのTXTファイルが必要なため、展開した`LightingManagementGUI`フォルダ全体で使用してください。ショートカットを作成する場合は、EXE本体を移動せず、EXEへのショートカットを作成します。
+
+初回起動時に、Windows Defender SmartScreenなどの警告が表示される場合があります。現在の配布版にはコード署名を行っていないためです。ダウンロード元が本リポジトリのGitHub Releasesであることを確認してから実行してください。
 
 ### Eclipse
 
@@ -190,6 +226,29 @@ java -cp bin Main
 ```
 
 エントリーポイントは `Main` です。`LightingManagementGUI` は旧画面を起動するクラスであり、現在の管理画面では使用しません。
+
+## Windows配布版の構成
+
+Windows版ZIPを展開すると、主に次のファイルとフォルダが含まれます。
+
+```text
+LightingManagementGUI
+├ LightingManagementGUI.exe
+├ app
+│ ├ LightingManagementGUI.jar
+│ └ LightingManagementGUI.cfg
+├ runtime
+├ equipments.txt
+├ projects.txt
+└ requestItems.txt
+```
+
+- `LightingManagementGUI.exe`：アプリの起動ファイル
+- `app`：アプリ本体のJARと起動設定
+- `runtime`：同梱されたJava実行環境
+- 3つのTXTファイル：機材、現場、現場ごとの登録機材を保存するデータ
+
+これらは一式で動作するため、フォルダ内のファイルを個別に削除・移動しないでください。
 
 ## プロジェクト構成
 
@@ -271,15 +330,20 @@ LightingManagementGUI
 - カンマを含む名称を保存できない
 - プレビュー印刷は1ページのみで、複数ページへの分割がない
 - 画面処理とデータ処理の多くが`Main`へ集約されている
-- 実行可能JARやWindowsアプリとしての配布は未対応
+- Windows版にインストーラーがなく、ZIP展開形式で配布している
+- Windows版へコード署名を行っていないため、起動時に警告が表示される場合がある
+- バージョン間の保存データ移行機能がない
+- 自動テストがなく、主要操作を手動で確認している
 
 ## 今後の改善候補
 
 1. 自動保存とバックアップの導入
 2. 保存先選択と単一データファイル化
-3. 画面処理とデータ処理のクラス分割
-4. 配布用JARまたはWindowsアプリの作成
-5. GitHub Releasesでの試験公開
+3. 旧バージョンからのデータ移行機能
+4. Windowsインストーラーの作成
+5. コード署名によるSmartScreen警告への対応
+6. 単体テスト・保存読込テスト・配布版起動テストの整備
+7. 画面処理とデータ処理のクラス分割
 
 ## ライセンス
 
